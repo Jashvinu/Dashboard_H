@@ -8,6 +8,39 @@ import os
 from process_data import preprocess_sales_data, load_processed_service_data
 from s3_utils import read_csv_from_s3, check_file_exists_in_s3
 
+
+def format_indian_money(amount, format_type='full'):
+    """
+    Format money in Indian style with proper comma placement
+    """
+    if pd.isna(amount) or amount == 0:
+        return "₹0"
+
+    def format_with_indian_commas(num):
+        """Helper function to add commas in Indian number system"""
+        s = str(int(round(num)))
+        if len(s) > 3:
+            last3 = s[-3:]
+            rest = s[:-3]
+            formatted_rest = ''
+            for i in range(len(rest)-1, -1, -2):
+                if i == 0:
+                    formatted_rest = rest[i] + formatted_rest
+                else:
+                    formatted_rest = ',' + \
+                        rest[max(i-1, 0):i+1] + formatted_rest
+            result = formatted_rest + ',' + last3 if formatted_rest else last3
+            # Remove the leftmost comma if it exists
+            if result.startswith(','):
+                result = result[1:]
+            return result
+        return s
+
+    # Format with Indian style commas
+    formatted_amount = format_with_indian_commas(amount)
+    return f"₹{formatted_amount}"
+
+
 # S3 configuration
 S3_BUCKET = st.secrets["S3_BUCKET"]
 S3_PREFIX = st.secrets["S3_PREFIX"]
@@ -87,15 +120,15 @@ with tab1:
 
     with col1:
         total_sales = filtered_data['MTD SALES'].sum()
-        st.metric("Total Sales", f"₹{total_sales:,.0f}")
+        st.metric("Total Sales", format_indian_money(total_sales))
 
     with col2:
         total_bills = filtered_data['MTD BILLS'].sum()
-        st.metric("Total Bills", f"{total_bills:,.0f}")
+        st.metric("Total Bills", format_indian_money(total_bills))
 
     with col3:
         avg_bill_value = total_sales / total_bills if total_bills > 0 else 0
-        st.metric("Average Bill Value", f"₹{avg_bill_value:,.0f}")
+        st.metric("Average Bill Value", format_indian_money(avg_bill_value))
 
     with col4:
         total_outlets = filtered_data['SALON NAMES'].nunique()
@@ -114,14 +147,23 @@ with tab1:
         x='SALON NAMES',
         y='MTD SALES',
         title="MTD Sales by Outlet",
-        labels={'MTD SALES': 'Sales (₹)', 'SALON NAMES': 'Outlet'},
+        labels={'MTD SALES': 'Sales', 'SALON NAMES': 'Outlet'},
         color='MTD SALES',
         color_continuous_scale='Viridis'
     )
-    fig.update_layout(xaxis={'categoryorder': 'total descending'})
+
+    fig.update_traces(
+        text=salon_sales['MTD SALES'].apply(format_indian_money),
+        textposition='outside',
+        hovertemplate='%{text}<extra></extra>'
+    )
+    fig.update_layout(
+        xaxis={'categoryorder': 'total descending'},
+        yaxis_title='Sales'
+    )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Sales Trend Over Months (if multiple months are available)
+    # Sales Trend Over Months
     if selected_month == "All":
         st.subheader("Monthly Sales Trend")
 
@@ -141,8 +183,12 @@ with tab1:
             y='MTD SALES',
             color='Year',
             title="Monthly Sales Trend",
-            labels={'MTD SALES': 'Sales (₹)', 'Month': 'Month'},
+            labels={'MTD SALES': 'Sales', 'Month': 'Month'},
             markers=True
+        )
+        fig.update_traces(
+            hovertemplate='%{text}<extra></extra>',
+            text=monthly_sales['MTD SALES'].apply(format_indian_money)
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -164,6 +210,27 @@ with tab2:
     # Create a custom sort order for months
     month_order = ['January', 'February', 'March', 'April', 'May', 'June',
                    'July', 'August', 'September', 'October', 'November', 'December']
+
+    # Create a mapping dictionary for month names
+    month_mapping = {
+        'Jan': 'January',
+        'Feb': 'February',
+        'Mar': 'March',
+        'Apr': 'April',
+        'May': 'May',
+        'Jun': 'June',
+        'Jul': 'July',
+        'Aug': 'August',
+        'Sep': 'September',
+        'Oct': 'October',
+        'Nov': 'November',
+        'Dec': 'December'
+    }
+
+    # Replace abbreviated month names with full names
+    outlet_yearly['Month'] = outlet_yearly['Month'].replace(month_mapping)
+
+    # Create the Month_Sorted column and sort
     outlet_yearly['Month_Sorted'] = pd.Categorical(
         outlet_yearly['Month'], categories=month_order, ordered=True)
     outlet_yearly = outlet_yearly.sort_values(['Year', 'Month_Sorted'])
@@ -176,9 +243,13 @@ with tab2:
         x='Month',
         y='MTD SALES',
         color='Year',
-        barmode='group',
+        barmode='stack',
         title=f"Monthly Sales for {selected_outlet} by Year",
-        labels={'MTD SALES': 'Sales (₹)', 'Month': 'Month', 'Year': 'Year'}
+        labels={'MTD SALES': 'Sales', 'Month': 'Month', 'Year': 'Year'}
+    )
+    fig.update_traces(
+        hovertemplate='%{text}<extra></extra>',
+        text=outlet_yearly['MTD SALES'].apply(format_indian_money)
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -205,6 +276,9 @@ with tab2:
                     colname = f"Growth {prev_year} to {current_year}"
                     pivot_data[colname] = (
                         (pivot_data[current_year] / pivot_data[prev_year]) - 1) * 100
+                    # Format the growth percentage with % symbol
+                    pivot_data[colname] = pivot_data[colname].apply(
+                        lambda x: f"{x:.2f}%")
 
                 # Display the growth table
                 pivot_data = pivot_data.rename(
@@ -216,26 +290,26 @@ with tab2:
                     col for col in pivot_data.columns if 'Growth' in str(col)]
 
                 if growth_cols and not pivot_data.empty:
-                    # Create the growth visualization
-                    fig = go.Figure()
+                    # Get the latest year's data
+                    latest_year = years[-1]
 
-                    for col in growth_cols:
-                        fig.add_trace(go.Bar(
-                            x=pivot_data['Month'],
-                            y=pivot_data[col],
-                            name=col
-                        ))
-
-                    fig.update_layout(
-                        title=f"Monthly Sales Growth (%) for {selected_outlet}",
-                        yaxis_title="Growth (%)",
-                        xaxis_title="Month"
+                    # Calculate projected values (110% of latest year)
+                    pivot_data['Projected (10% Growth)'] = pivot_data[latest_year] * 1.10
+                    # Format the projected values with currency symbol and Indian comma format
+                    pivot_data['Projected (10% Growth)'] = pivot_data['Projected (10% Growth)'].apply(
+                        lambda x: format_indian_money(x)
                     )
 
-                    st.plotly_chart(fig, use_container_width=True)
+                    # Format the year columns with Indian comma format
+                    for year in years:
+                        pivot_data[year] = pivot_data[year].apply(
+                            lambda x: format_indian_money(x))
 
-                    # Show the actual data table
-                    display_cols = ['Month'] + years + growth_cols
+                    # Update display columns to include projected growth
+                    display_cols = ['Month'] + years + \
+                        growth_cols + ['Projected (10% Growth)']
+
+                    # Display using st.dataframe
                     st.dataframe(pivot_data[display_cols],
                                  use_container_width=True)
                 else:
@@ -279,6 +353,10 @@ with tab2:
                     title=f"Daily Sales for {selected_outlet}",
                     labels={'MTD SALES': 'Sales (₹)', 'DAY SALES': 'Day'}
                 )
+                fig.update_traces(
+                    hovertemplate='%{text}<extra></extra>',
+                    text=daily_avg['MTD SALES'].apply(format_indian_money)
+                )
                 st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
                 st.error(f"Error processing daily sales data: {e}")
@@ -304,6 +382,12 @@ with tab3:
             business_unit_sales = category_data.groupby(
                 'Business Unit')['Total_Sales'].sum().reset_index()
 
+            # Convert all values to Crores
+            divisor = 10000000  # 1 crore = 10 million
+            suffix = 'Cr'
+
+            business_unit_sales['Display_Sales'] = business_unit_sales['Total_Sales'] / divisor
+
             # Create pie chart for business units
             fig_bu = px.pie(
                 business_unit_sales,
@@ -313,11 +397,17 @@ with tab3:
                 hole=0.4,
                 color_discrete_sequence=px.colors.qualitative.Bold
             )
+            fig_bu.update_traces(
+                texttemplate='₹%{value:,.0f}',
+                hovertemplate='₹%{value:,.0f}<extra></extra>'
+            )
 
             # Group by Item Category and Business Unit
             # Select top 15 categories by sales
             top_categories = category_data.sort_values(
                 'Total_Sales', ascending=False).head(15)
+
+            top_categories['Display_Sales'] = top_categories['Total_Sales'] / divisor
 
             # Create bar chart for top 15 categories
             fig_cat = px.bar(
@@ -327,10 +417,18 @@ with tab3:
                 color='Business Unit',
                 title="Top 15 Service/Product Categories",
                 labels={
-                    'Total_Sales': 'Sales (₹)', 'Item Category': 'Category'},
-                text_auto='.2s'  # Format text with automatic formatting
+                    'Total_Sales': 'Sales', 'Item Category': 'Category'},
             )
-            fig_cat.update_layout(xaxis={'categoryorder': 'total descending'})
+            fig_cat.update_traces(
+                text=top_categories['Total_Sales'],
+                texttemplate='₹%{text:,.0f}',
+                textposition='outside',
+                hovertemplate='₹%{text:,.0f}<extra></extra>'
+            )
+            fig_cat.update_layout(
+                xaxis={'categoryorder': 'total descending'},
+                yaxis_title='Sales'
+            )
 
             # Display charts in columns
             col1, col2 = st.columns(2)
@@ -348,6 +446,18 @@ with tab3:
                     color_continuous_scale='Viridis',
                     title="Hierarchical View of Sales"
                 )
+
+                # Format the labels to show both name and sales amount
+                fig_tree.update_traces(
+                    texttemplate='%{label}<br>₹%{value:,.0f}',
+                    hovertemplate='%{label}<br>Total: %{value:,.0f}<extra></extra>'
+                )
+
+                # Update display for parent nodes
+                for i in range(len(fig_tree.data[0].ids)):
+                    if fig_tree.data[0].parents[i] == '':  # Root node
+                        fig_tree.data[0].texttemplate = '%{label}<br>Total: ₹%{value:,.0f}'
+
                 st.plotly_chart(fig_tree, use_container_width=True)
 
             # Display bar chart for top categories
@@ -370,11 +480,12 @@ with tab3:
             pivot_flat = pivot.reset_index()
             formatted_pivot = pivot_flat.copy()
 
-            # Format the sales columns with ₹ symbol
+            # Format the sales columns with ₹ symbol and Indian comma format
             for col in formatted_pivot.columns:
                 if isinstance(col, tuple) and col[0] == 'Total_Sales':
                     formatted_pivot[col] = formatted_pivot[col].apply(
-                        lambda x: f"₹{x:,.0f}" if x > 0 else "")
+                        lambda x: format_indian_money(x) if x > 0 else ""
+                    )
 
             st.dataframe(formatted_pivot, use_container_width=True)
 
@@ -467,14 +578,32 @@ with tab3:
             category_sales = filtered_service_data.groupby(
                 'Service_Type')['Total_Sales'].sum().reset_index()
 
+            # Create a mapping for more readable service names
+            service_name_mapping = {
+                'Hair': 'Hair Services',
+                'Skin': 'Skin Care',
+                'SPA': 'SPA & Massage',
+                'Other Services': 'Other Services',
+                'Product': 'Products'
+            }
+
+            # Apply the mapping
+            category_sales['Display_Name'] = category_sales['Service_Type'].map(
+                lambda x: service_name_mapping.get(x, x)
+            )
+
             # Create service category visualization
             fig = px.pie(
                 category_sales,
                 values='Total_Sales',
-                names='Service_Type',
+                names='Display_Name',  # Use the display name
                 title="Sales Distribution by Category",
+                labels={'Total_Sales': 'Sales (in Lakhs)'},
                 hole=0.4,
                 color_discrete_sequence=px.colors.qualitative.G10
+            )
+            fig.update_traces(
+                hovertemplate='₹%{y:,.0f}<extra></extra>'
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -484,12 +613,26 @@ with tab3:
             service_product = filtered_service_data.groupby(
                 'Category')['Total_Sales'].sum().reset_index()
 
+            # Create a mapping for more readable category names
+            category_name_mapping = {
+                'Service': 'All Services',
+                'Product': 'Products'
+            }
+
+            # Apply the mapping
+            service_product['Display_Name'] = service_product['Category'].map(
+                lambda x: category_name_mapping.get(x, x)
+            )
+
             fig = px.pie(
                 service_product,
                 values='Total_Sales',
-                names='Category',
+                names='Display_Name',
                 title="Service vs Product Sales Distribution",
                 color_discrete_sequence=['#3366CC', '#FF9900']
+            )
+            fig.update_traces(
+                hovertemplate='₹%{y:,.0f}<extra></extra>'
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -504,11 +647,16 @@ with tab3:
         category_details['Average_Transaction'] = category_details['Total_Sales'] / \
             category_details['Transaction_Count']
 
+        # Apply the same mapping for display
+        category_details['Service_Type'] = category_details['Service_Type'].map(
+            lambda x: service_name_mapping.get(x, x)
+        )
+
         # Format for display
         category_details['Total_Sales'] = category_details['Total_Sales'].apply(
-            lambda x: f"₹{x:,.0f}")
+            lambda x: format_indian_money(x, 'lakhs'))
         category_details['Average_Transaction'] = category_details['Average_Transaction'].apply(
-            lambda x: f"₹{x:,.0f}")
+            lambda x: format_indian_money(x, 'lakhs'))
 
         # Rename columns for display
         category_details.columns = [
@@ -536,10 +684,15 @@ with tab3:
             y='Total_Sales',
             title="Total Sales by Center",
             color='Total_Sales',
-            labels={'Total_Sales': 'Sales (₹)', 'Center Name': 'Center'},
+            labels={
+                'Total_Sales': 'Sales', 'Center Name': 'Center'},
             text='Total_Sales'
         )
-        fig.update_traces(texttemplate='₹%{text:,.0f}', textposition='outside')
+        fig.update_traces(
+            texttemplate='₹%{text:,.0f}',
+            textposition='outside',
+            hovertemplate='₹%{text:,.0f}<extra></extra>'
+        )
         st.plotly_chart(fig, use_container_width=True)
 
         # Compare centers across years if multiple years available
@@ -558,8 +711,11 @@ with tab3:
                 color='Year',
                 barmode='group',
                 title="Center Sales by Year",
-                labels={
-                    'Total_Sales': 'Sales (₹)', 'Center Name': 'Center', 'Year': 'Year'}
+                labels={'Total_Sales': 'Sales',
+                        'Center Name': 'Center', 'Year': 'Year'}
+            )
+            fig.update_traces(
+                hovertemplate='₹%{y:,.0f}<extra></extra>'
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -632,7 +788,11 @@ with tab3:
                     text='Growth (%)'
                 )
                 fig.update_traces(
-                    texttemplate='%{text:.1f}%', textposition='outside')
+                    texttemplate='₹%{text:,.1f}%', textposition='outside'
+                )
+                fig.update_traces(
+                    hovertemplate='₹%{y:,.0f}<extra></extra>'
+                )
                 st.plotly_chart(fig, use_container_width=True)
 
                 # Format growth data for display
@@ -640,6 +800,11 @@ with tab3:
                 for col in growth_cols:
                     display_growth[col] = display_growth[col].apply(
                         lambda x: f"{x:.2f}%" if not pd.isna(x) and not np.isinf(x) else "N/A")
+
+                # Format sales columns with Indian comma format
+                for year in years:
+                    display_growth[year] = display_growth[year].apply(
+                        lambda x: format_indian_money(x))
 
                 st.dataframe(display_growth, use_container_width=True)
     else:
@@ -659,6 +824,9 @@ with tab3:
             title="Sales by Brand and Year",
             labels={'MTD SALES': 'Sales (₹)', 'BRAND': 'Brand'}
         )
+        fig.update_traces(
+            hovertemplate='₹%{y:,.0f}<extra></extra>'
+        )
         st.plotly_chart(fig, use_container_width=True)
 
         # Add comparison of salon names
@@ -677,6 +845,9 @@ with tab3:
             labels={'MTD SALES': 'Sales (₹)', 'SALON NAMES': 'Salon'}
         )
         fig.update_layout(xaxis={'categoryorder': 'total descending'})
+        fig.update_traces(
+            hovertemplate='₹%{y:,.0f}<extra></extra>'
+        )
         st.plotly_chart(fig, use_container_width=True)
 
 with tab4:
@@ -700,10 +871,12 @@ with tab4:
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.metric("Total Sales (2023)", f"₹{total_2023:,.0f}")
+            st.metric("Total Sales (2023)",
+                      format_indian_money(total_2023, 'lakhs'))
 
         with col2:
-            st.metric("Total Sales (2025)", f"₹{total_2025:,.0f}")
+            st.metric("Total Sales (2025)",
+                      format_indian_money(total_2025, 'lakhs'))
 
         with col3:
             st.metric("2-Year Growth", f"{overall_growth:.2f}%")
@@ -738,10 +911,12 @@ with tab4:
             color_continuous_scale='RdYlGn',
             text='Growth_Percent'
         )
-
-        fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-        fig.update_layout(xaxis={'categoryorder': 'total descending'})
-
+        fig.update_traces(
+            texttemplate='%{text:.2f}%', textposition='outside'
+        )
+        fig.update_traces(
+            hovertemplate='%{text}<extra></extra>'
+        )
         st.plotly_chart(fig, use_container_width=True)
 
     if len(years) >= 2:
@@ -793,10 +968,12 @@ with tab4:
             color_continuous_scale='RdYlGn',
             text='Growth_Percent'
         )
-
-        fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-        fig.update_layout(xaxis={'categoryorder': 'total descending'})
-
+        fig.update_traces(
+            texttemplate='%{text:.2f}%', textposition='outside'
+        )
+        fig.update_traces(
+            hovertemplate='%{text}<extra></extra>'
+        )
         st.plotly_chart(fig, use_container_width=True)
 
         # Display growth table
@@ -805,11 +982,11 @@ with tab4:
         # Format the table
         display_growth = growth_data.copy()
         display_growth['MTD SALES_base'] = display_growth['MTD SALES_base'].apply(
-            lambda x: f"₹{x:,.0f}")
+            lambda x: format_indian_money(x))
         display_growth['MTD SALES_compare'] = display_growth['MTD SALES_compare'].apply(
-            lambda x: f"₹{x:,.0f}")
+            lambda x: format_indian_money(x))
         display_growth['Growth_Amount'] = display_growth['Growth_Amount'].apply(
-            lambda x: f"₹{x:,.0f}")
+            lambda x: format_indian_money(x))
         display_growth['Growth_Percent'] = display_growth['Growth_Percent'].apply(
             lambda x: f"{x:.2f}%")
 
@@ -829,11 +1006,12 @@ with tab4:
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.metric(f"Total Sales ({base_year})", f"₹{total_base:,.0f}")
+            st.metric(f"Total Sales ({base_year})",
+                      format_indian_money(total_base, 'lakhs'))
 
         with col2:
             st.metric(f"Total Sales ({compare_year})",
-                      f"₹{total_compare:,.0f}")
+                      format_indian_money(total_compare, 'lakhs'))
 
         with col3:
             st.metric("Overall Growth",
@@ -903,8 +1081,17 @@ with tab4:
             hovermode="x unified"
         )
 
-        fig.update_yaxes(title_text="Growth (%)", secondary_y=False)
-        fig.update_yaxes(title_text="Sales (₹)", secondary_y=True)
+        fig.update_yaxes(
+            title_text="Growth (%)",
+            secondary_y=False
+        )
+        fig.update_yaxes(
+            title_text="Sales (in Lakhs)",
+            secondary_y=True
+        )
+        fig.update_traces(
+            hovertemplate='%{text}<extra></extra>'
+        )
 
         st.plotly_chart(fig, use_container_width=True)
 
@@ -935,6 +1122,9 @@ with tab4:
                 'BRAND': 'Brand',
                 'variable': 'Year'
             }
+        )
+        fig.update_traces(
+            hovertemplate='%{text}<extra></extra>'
         )
 
         # Add growth percentage as text
@@ -971,9 +1161,13 @@ with tab4:
             x='Month',
             y='MTD SALES',
             color='Year',
-            barmode='group',
+            barmode='stack',
             title="T NAGAR Monthly Sales by Year",
             labels={'MTD SALES': 'Sales (₹)', 'Month': 'Month', 'Year': 'Year'}
+        )
+        fig.update_traces(
+            hovertemplate='%{text}<extra></extra>',
+            text=t_nagar_data['MTD SALES'].apply(format_indian_money)
         )
         st.plotly_chart(fig, use_container_width=True)
 
