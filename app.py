@@ -82,8 +82,8 @@ with st.spinner("Loading data..."):
 has_service_data = not service_data.empty
 
 # Main dashboard tabs
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["MTD Sales Overview", "Outlet Comparison", "Service & Product Analysis", "Growth Analysis"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["MTD Sales Overview", "Outlet Comparison", "Service & Product Analysis", "Growth Analysis", "MTD Analysis (2022-2025)"])
 
 with tab1:
     st.header("Monthly Sales Overview")
@@ -378,8 +378,30 @@ with tab3:
         if check_file_exists_in_s3(S3_BUCKET, category_file_key):
             category_data = read_csv_from_s3(S3_BUCKET, category_file_key)
 
+            # Check if Year column exists in category data
+            if 'Year' in category_data.columns and len(category_data['Year'].unique()) > 1:
+                # Add year filter with "Total" option
+                year_options = ["Total"] + \
+                    sorted(category_data['Year'].unique(), reverse=True)
+                selected_breakdown_year = st.selectbox(
+                    "Select Year for Category Breakdown", year_options)
+
+                # Set breakdown_data for the charts
+                if selected_breakdown_year == "Total":
+                    breakdown_data = category_data.copy()
+                    year_title = "All Years"
+                else:
+                    # Filter by year if applicable
+                    breakdown_data = category_data[category_data['Year']
+                                                   == selected_breakdown_year].copy()
+                    year_title = selected_breakdown_year
+            else:
+                # No Year column or only one year, use all data
+                breakdown_data = category_data.copy()
+                year_title = "All Data"
+
             # Group by Business Unit
-            business_unit_sales = category_data.groupby(
+            business_unit_sales = breakdown_data.groupby(
                 'Business Unit')['Total_Sales'].sum().reset_index()
 
             # Convert all values to Crores
@@ -393,37 +415,48 @@ with tab3:
                 business_unit_sales,
                 values='Total_Sales',
                 names='Business Unit',
-                title="Sales by Business Unit",
+                title=f"Sales by Business Unit ({year_title})",
                 hole=0.4,
                 color_discrete_sequence=px.colors.qualitative.Bold
             )
+
+            # Pre-format values for hover display
+            business_unit_sales['formatted_sales'] = business_unit_sales['Total_Sales'].apply(
+                lambda x: format_indian_money(x).replace('₹', '')
+            )
+
             fig_bu.update_traces(
-                texttemplate='₹%{value:,.0f}',
-                hovertemplate='₹%{value:,.0f}<extra></extra>'
+                text=business_unit_sales['formatted_sales'],
+                texttemplate='₹%{text}',
+                hovertemplate='₹%{text}<extra></extra>'
             )
 
             # Group by Item Category and Business Unit
             # Select top 15 categories by sales
-            top_categories = category_data.sort_values(
+            top_categories = breakdown_data.sort_values(
                 'Total_Sales', ascending=False).head(15)
 
             top_categories['Display_Sales'] = top_categories['Total_Sales'] / divisor
 
             # Create bar chart for top 15 categories
+            top_categories['formatted_sales'] = top_categories['Total_Sales'].apply(
+                lambda x: format_indian_money(x).replace('₹', '')
+            )
+
             fig_cat = px.bar(
                 top_categories,
                 x='Item Category',
                 y='Total_Sales',
                 color='Business Unit',
-                title="Top 15 Service/Product Categories",
+                title=f"Top 15 Service/Product Categories ({year_title})",
                 labels={
                     'Total_Sales': 'Sales', 'Item Category': 'Category'},
             )
             fig_cat.update_traces(
-                text=top_categories['Total_Sales'],
-                texttemplate='₹%{text:,.0f}',
+                text=top_categories['formatted_sales'],
+                texttemplate='₹%{text}',
                 textposition='outside',
-                hovertemplate='₹%{text:,.0f}<extra></extra>'
+                hovertemplate='₹%{text}<extra></extra>'
             )
             fig_cat.update_layout(
                 xaxis={'categoryorder': 'total descending'},
@@ -439,12 +472,12 @@ with tab3:
             with col2:
                 # Create treemap for business unit and category breakdown
                 fig_tree = px.treemap(
-                    category_data,
+                    breakdown_data,
                     path=['Business Unit', 'Item Category'],
                     values='Total_Sales',
                     color='Total_Sales',
                     color_continuous_scale='Viridis',
-                    title="Hierarchical View of Sales"
+                    title=f"Hierarchical View of Sales ({year_title})"
                 )
 
                 # Format the labels to show both name and sales amount
@@ -569,13 +602,49 @@ with tab3:
                 filtered_service_data['Item Subcategory'] == selected_item_subcategory]
 
         # Service Categories Analysis
+        st.subheader("Service Categories Breakdown")
+
+        # Add year filter with "Total" option
+        year_options = ["Total"] + \
+            sorted(service_data['Year'].unique(), reverse=True)
+        selected_breakdown_year = st.selectbox(
+            "Select Year for Breakdown", year_options)
+
+        # Filter data based on selected year or use all years
+        if selected_breakdown_year == "Total":
+            breakdown_data = service_data.copy()  # Use all data
+            year_title = "All Years"
+        else:
+            breakdown_data = service_data[service_data['Year']
+                                          == selected_breakdown_year].copy()
+            year_title = selected_breakdown_year
+
+        # Apply other filters except year
+        if selected_center != "All":
+            breakdown_data = breakdown_data[
+                breakdown_data['Center Name'] == selected_center]
+
+        if selected_item_category != "All":
+            breakdown_data = breakdown_data[breakdown_data['Service_Type']
+                                            == selected_item_category]
+
+        if selected_subcategory != "All" and 'Item Category' in breakdown_data.columns:
+            breakdown_data = breakdown_data[
+                breakdown_data['Item Category'] == selected_subcategory]
+
+        if selected_business_unit != "All" and 'Business Unit' in breakdown_data.columns:
+            breakdown_data = breakdown_data[
+                breakdown_data['Business Unit'] == selected_business_unit]
+
+        if selected_item_subcategory != "All" and 'Item Subcategory' in breakdown_data.columns:
+            breakdown_data = breakdown_data[
+                breakdown_data['Item Subcategory'] == selected_item_subcategory]
+
         col1, col2 = st.columns(2)
 
         with col1:
-            st.subheader("Service Categories Breakdown")
-
             # Calculate metrics by service category
-            category_sales = filtered_service_data.groupby(
+            category_sales = breakdown_data.groupby(
                 'Service_Type')['Total_Sales'].sum().reset_index()
 
             # Create a mapping for more readable service names
@@ -597,7 +666,7 @@ with tab3:
                 category_sales,
                 values='Total_Sales',
                 names='Display_Name',  # Use the display name
-                title="Sales Distribution by Category",
+                title=f"Sales Distribution by Category ({year_title})",
                 labels={'Total_Sales': 'Sales (in Lakhs)'},
                 hole=0.4,
                 color_discrete_sequence=px.colors.qualitative.G10
@@ -610,7 +679,7 @@ with tab3:
         with col2:
             st.subheader("Service vs Product Sales")
 
-            service_product = filtered_service_data.groupby(
+            service_product = breakdown_data.groupby(
                 'Category')['Total_Sales'].sum().reset_index()
 
             # Create a mapping for more readable category names
@@ -628,7 +697,7 @@ with tab3:
                 service_product,
                 values='Total_Sales',
                 names='Display_Name',
-                title="Service vs Product Sales Distribution",
+                title=f"Service vs Product Sales Distribution ({year_title})",
                 color_discrete_sequence=['#3366CC', '#FF9900']
             )
             fig.update_traces(
@@ -637,9 +706,9 @@ with tab3:
             st.plotly_chart(fig, use_container_width=True)
 
         # Display detailed service category metrics
-        st.subheader("Service Category Metrics")
+        st.subheader(f"Service Category Metrics ({year_title})")
 
-        category_details = filtered_service_data.groupby('Service_Type').agg({
+        category_details = breakdown_data.groupby('Service_Type').agg({
             'Total_Sales': 'sum',
             'Transaction_Count': 'sum'
         }).reset_index()
@@ -664,11 +733,11 @@ with tab3:
 
         st.dataframe(category_details, use_container_width=True)
 
-        # Center-wise Analysis (NEW)
-        st.subheader("Center-wise Service Analysis")
+        # Center-wise Analysis
+        st.subheader(f"Center-wise Service Analysis ({year_title})")
 
         # Group by center and calculate totals
-        center_sales = filtered_service_data.groupby('Center Name').agg({
+        center_sales = breakdown_data.groupby('Center Name').agg({
             'Total_Sales': 'sum',
             'Transaction_Count': 'sum'
         }).reset_index()
@@ -682,7 +751,7 @@ with tab3:
             center_sales,
             x='Center Name',
             y='Total_Sales',
-            title="Total Sales by Center",
+            title=f"Total Sales by Center ({year_title})",
             color='Total_Sales',
             labels={
                 'Total_Sales': 'Sales', 'Center Name': 'Center'},
@@ -1206,6 +1275,543 @@ with tab4:
                           f"{total_growth:.2f}%")
     else:
         st.info("No data available for T NAGAR outlet.")
+
+with tab5:
+    st.header("MTD Analysis (2022-2025)")
+
+    # Load all MTD files
+    mtd_files = {
+        "2022": "dataset/MTD - 2022.csv",
+        "2023": "dataset/MTD - 2023.csv",
+        "2024": "dataset/MTD - 2024.csv",
+        "2025": "dataset/MTD - 2025.csv",
+        "combined": "dataset/MTD - MTD 2022-2023-2024-2025.csv"
+    }
+
+    # Create a function to load MTD data
+    def load_mtd_data(file_path):
+        try:
+            # Different loading logic based on file type
+            if "2022-2023-2024-2025" in file_path:
+                # Combined file has a different structure
+                df = pd.read_csv(file_path, skiprows=1)
+                df.columns = df.columns.str.strip()
+                return df
+            else:
+                # Single year files
+                df = pd.read_csv(file_path, skiprows=0)
+                # Clean column names
+                df.columns = [col.strip() for col in df.columns]
+                # Remove empty rows and summary rows
+                df = df[df['S.NO'].notna() & df['SALONS'].notna()]
+                # Convert S.NO to numeric
+                df['S.NO'] = pd.to_numeric(df['S.NO'], errors='coerce')
+                return df
+        except Exception as e:
+            st.error(f"Error loading {file_path}: {e}")
+            return pd.DataFrame()
+
+    # Load combined MTD data
+    if os.path.exists(mtd_files["combined"]):
+        combined_mtd = load_mtd_data(mtd_files["combined"])
+
+        # Show the monthly trend for all years
+        st.subheader("Monthly Sales Trend (2022-2025)")
+
+        # Reshape data for plotting
+        if not combined_mtd.empty:
+            # Melt the dataframe for easier plotting
+            melted_data = pd.melt(
+                combined_mtd,
+                id_vars=['Month'],
+                value_vars=['2022', '2023', '2024', '2025'],
+                var_name='Year',
+                value_name='Sales'
+            )
+
+            # Convert to numeric
+            melted_data['Sales'] = pd.to_numeric(
+                melted_data['Sales'], errors='coerce')
+
+            # Add formatted sales for hover display
+            melted_data['formatted_sales'] = melted_data['Sales'].apply(
+                lambda x: format_indian_money(x).replace(
+                    '₹', '') if pd.notna(x) else ''
+            )
+
+            # Create line chart
+            fig = px.line(
+                melted_data,
+                x='Month',
+                y='Sales',
+                color='Year',
+                markers=True,
+                title="Monthly Sales Comparison Across Years",
+                labels={'Sales': 'Sales', 'Month': 'Month'}
+            )
+
+            # Update traces to use formatted text
+            fig.update_traces(
+                text=melted_data['formatted_sales'],
+                hovertemplate='₹%{text}<extra></extra>'
+            )
+
+            # Add percentage labels for year-over-year growth
+            for year in ['2023', '2024', '2025']:
+                if year in melted_data['Year'].unique():
+                    # Get previous year
+                    prev_year = str(int(year) - 1)
+
+                    if prev_year in melted_data['Year'].unique():
+                        # Calculate growth for each month
+                        for month in combined_mtd['Month'].unique():
+                            current = melted_data[(melted_data['Year'] == year) & (
+                                melted_data['Month'] == month)]['Sales'].values
+                            previous = melted_data[(melted_data['Year'] == prev_year) & (
+                                melted_data['Month'] == month)]['Sales'].values
+
+                            if len(current) > 0 and len(previous) > 0 and previous[0] > 0:
+                                growth = ((current[0] / previous[0]) - 1) * 100
+
+                                # Add annotation
+                                fig.add_annotation(
+                                    x=month,
+                                    y=current[0],
+                                    text=f"{growth:.1f}%",
+                                    showarrow=True,
+                                    arrowhead=1,
+                                    xshift=5,
+                                    yshift=10
+                                )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Show the total for each year
+            st.subheader("Yearly Totals")
+
+            # Calculate yearly totals
+            yearly_totals = {}
+            for year in ['2022', '2023', '2024', '2025']:
+                if year in combined_mtd.columns:
+                    yearly_totals[year] = combined_mtd[year].sum()
+
+            # Calculate year-over-year growth
+            yearly_growth = []
+            years = sorted(yearly_totals.keys())
+
+            for i in range(1, len(years)):
+                current_year = years[i]
+                prev_year = years[i-1]
+
+                growth_pct = (
+                    (yearly_totals[current_year] / yearly_totals[prev_year]) - 1) * 100
+                yearly_growth.append({
+                    'Year': current_year,
+                    'Sales': yearly_totals[current_year],
+                    'Previous Year': prev_year,
+                    'Previous Sales': yearly_totals[prev_year],
+                    'Growth (%)': growth_pct
+                })
+
+            # Display in columns
+            cols = st.columns(len(years))
+            for i, year in enumerate(years):
+                with cols[i]:
+                    st.metric(
+                        f"{year} Total",
+                        format_indian_money(yearly_totals[year]),
+                        f"{yearly_growth[i-1]['Growth (%)']:.2f}%" if i > 0 else None
+                    )
+
+            # Year-over-year growth chart
+            if len(yearly_growth) > 0:
+                st.subheader("Year-over-Year Growth")
+
+                growth_df = pd.DataFrame(yearly_growth)
+
+                fig = px.bar(
+                    growth_df,
+                    x='Year',
+                    y='Growth (%)',
+                    text='Growth (%)',
+                    title="Year-over-Year Sales Growth",
+                    labels={'Growth (%)': 'Growth (%)', 'Year': 'Year'}
+                )
+                fig.update_traces(
+                    texttemplate='%{text:.2f}%', textposition='outside')
+
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Show growth data table
+                formatted_growth = growth_df.copy()
+                formatted_growth['Sales'] = formatted_growth['Sales'].apply(
+                    lambda x: format_indian_money(x))
+                formatted_growth['Previous Sales'] = formatted_growth['Previous Sales'].apply(
+                    lambda x: format_indian_money(x))
+                formatted_growth['Growth (%)'] = formatted_growth['Growth (%)'].apply(
+                    lambda x: f"{x:.2f}%")
+
+                st.dataframe(formatted_growth, use_container_width=True)
+
+    # Function to load MTD data specifically for salon analysis
+    def load_mtd_salon_data(file_path, target_year):
+        try:
+            # Read the CSV file
+            df = pd.read_csv(file_path)
+
+            # Clean up column names
+            df.columns = [str(col).strip() for col in df.columns]
+
+            # Handle the empty first column if it exists
+            if df.columns[0] == '' or df.columns[0] == 'Unnamed: 0':
+                df = df.iloc[:, 1:]  # Skip the first empty column
+
+            # Ensure we have a SALONS column
+            if 'SALONS' not in df.columns:
+                # Try to find it by similar names
+                salon_col = None
+                for col in df.columns:
+                    if 'SALON' in str(col).upper():
+                        salon_col = col
+                        break
+
+                if salon_col:
+                    df = df.rename(columns={salon_col: 'SALONS'})
+                else:
+                    # MTD files typically have SALONS in the 3rd column
+                    if len(df.columns) >= 3:
+                        df = df.rename(columns={df.columns[2]: 'SALONS'})
+
+            # Filter out rows where SALONS is missing or empty or contains summary data
+            if 'SALONS' in df.columns:
+                # Drop rows with NaN in SALONS
+                df = df.dropna(subset=['SALONS'])
+
+                # Drop rows where SALONS is empty or numeric (likely a total)
+                df = df[df['SALONS'].astype(str).str.strip() != '']
+                df = df[~df['SALONS'].astype(str).str.match(r'^\d+$')]
+
+                # If S.NO exists, filter to only keep rows with valid S.NO
+                if 'S.NO' in df.columns:
+                    df = df[df['S.NO'].notna()]
+                    # Convert S.NO to numeric to filter out summary rows
+                    df['S.NO'] = pd.to_numeric(df['S.NO'], errors='coerce')
+                    df = df[df['S.NO'].notna()]
+
+            # Identify month columns
+            month_columns = [col for col in df.columns if col in [
+                'January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November', 'December']]
+
+            # Clean the data - select only SALONS and month columns
+            salon_data = df[['SALONS'] + month_columns].copy()
+
+            # Convert month columns to numeric, handling commas and currency symbols
+            for month in month_columns:
+                if salon_data[month].dtype == 'object':
+                    salon_data[month] = salon_data[month].astype(
+                        str).str.replace(',', '')
+                    salon_data[month] = salon_data[month].astype(
+                        str).str.replace('₹', '')
+                    salon_data[month] = salon_data[month].astype(
+                        str).str.replace(' ', '')
+                salon_data[month] = pd.to_numeric(
+                    salon_data[month], errors='coerce')
+
+            # Remove any rows where SALONS contains "total" (case insensitive)
+            salon_data = salon_data[~salon_data['SALONS'].astype(
+                str).str.lower().str.contains('total')]
+
+            return salon_data
+        except Exception as e:
+            return pd.DataFrame()
+
+    # Load salon data directly from MTD files for comparison
+    st.subheader("Salon Performance Analysis")
+
+    # List all MTD files from the dataset directory
+    mtd_files_all = {
+        "2022": "dataset/MTD - 2022.csv",
+        "2023": "dataset/MTD - 2023.csv",
+        "2024": "dataset/MTD - 2024.csv",
+        "2025": "dataset/MTD - 2025.csv"
+    }
+
+    # Get available files
+    available_files = {}
+    for year, path in mtd_files_all.items():
+        if os.path.exists(path):
+            available_files[year] = path
+
+    if available_files:
+        # Display available years and allow user to select
+        available_years = list(available_files.keys())
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            selected_years = st.multiselect(
+                "Select Years", available_years, default=available_years)
+
+        with col2:
+            month_options = ["January", "February", "March", "April", "May", "June",
+                             "July", "August", "September", "October", "November", "December"]
+            selected_month = st.selectbox("Select Month", month_options)
+
+        if selected_years and selected_month:
+            st.write(f"### {selected_month} Salon Performance")
+
+            # Load all selected years' data
+            all_salon_data = {}
+
+            for year in selected_years:
+                file_path = available_files[year]
+                salon_data = load_mtd_salon_data(file_path, year)
+
+                if not salon_data.empty and selected_month in salon_data.columns:
+                    # Prepare the data
+                    data = salon_data[['SALONS', selected_month]].copy()
+                    # Rename month column to year
+                    data.columns = ['SALONS', year]
+                    # Store in dictionary
+                    all_salon_data[year] = data
+
+            # If we have data from multiple years, merge and create visualizations
+            if len(all_salon_data) > 0:
+                # Merge data from all years
+                merged_data = None
+
+                for year, data in all_salon_data.items():
+                    if merged_data is None:
+                        merged_data = data
+                    else:
+                        merged_data = pd.merge(
+                            merged_data, data, on='SALONS', how='outer')
+
+                # Fill NaN values with 0
+                for year in selected_years:
+                    if year in merged_data.columns:
+                        merged_data[year] = pd.to_numeric(
+                            merged_data[year], errors='coerce').fillna(0)
+
+                # Sort by the latest year's data
+                if selected_years:
+                    latest_year = max(selected_years)
+                    if latest_year in merged_data.columns:
+                        merged_data = merged_data.sort_values(
+                            by=latest_year, ascending=False)
+
+                # Top salons visualization
+                top_salons = merged_data.head(15)
+
+                # Add formatted sales for hover display
+                for year in selected_years:
+                    if year in top_salons.columns:
+                        top_salons[f'formatted_{year}'] = top_salons[year].apply(
+                            lambda x: format_indian_money(x).replace(
+                                '₹', '') if pd.notna(x) and x > 0 else ''
+                        )
+
+                # Create the chart
+                fig = px.bar(
+                    top_salons,
+                    x='SALONS',
+                    y=selected_years,
+                    barmode='group',
+                    title=f"Top 15 Salons - {selected_month} Performance",
+                    labels={
+                        'value': 'Sales', 'SALONS': 'Salon', 'variable': 'Year'}
+                )
+
+                # Update traces to use formatted text
+                for i, year in enumerate(selected_years):
+                    if year in top_salons.columns:
+                        fig.data[i].text = top_salons[f'formatted_{year}']
+                        fig.data[i].texttemplate = '₹%{text}'
+                        fig.data[i].hovertemplate = '₹%{text}<extra></extra>'
+
+                # Add growth percentages for multiple years
+                if len(selected_years) > 1:
+                    for i in range(1, len(selected_years)):
+                        current_year = selected_years[i]
+                        prev_year = selected_years[i-1]
+
+                        for j, salon in enumerate(top_salons['SALONS']):
+                            salon_row = top_salons[top_salons['SALONS']
+                                                   == salon].iloc[0]
+
+                            prev_val = salon_row[prev_year]
+                            curr_val = salon_row[current_year]
+
+                            if prev_val > 0:
+                                growth = ((curr_val / prev_val) - 1) * 100
+                                # Add annotation for significant growth
+                                if abs(growth) > 10:
+                                    fig.add_annotation(
+                                        x=salon,
+                                        y=curr_val,
+                                        text=f"{growth:.1f}%",
+                                        showarrow=True,
+                                        arrowhead=1,
+                                        yshift=10
+                                    )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Create data table with all salons
+                st.subheader("Complete Salon Data")
+
+                # Format for display
+                display_data = merged_data.copy()
+
+                # Format monetary values
+                for year in selected_years:
+                    if year in display_data.columns:
+                        display_data[year] = display_data[year].apply(
+                            lambda x: format_indian_money(x) if x > 0 else "")
+
+                # Add growth columns
+                if len(selected_years) > 1:
+                    for i in range(1, len(selected_years)):
+                        current_year = selected_years[i]
+                        prev_year = selected_years[i-1]
+
+                        growth_col = f"Growth {prev_year}-{current_year}"
+
+                        # Calculate growth
+                        merged_data[growth_col] = merged_data.apply(
+                            lambda row: (
+                                (row[current_year] / row[prev_year]) - 1) * 100
+                            if row[prev_year] > 0 else 0,
+                            axis=1
+                        )
+
+                        # Format growth column
+                        display_data[growth_col] = merged_data[growth_col].apply(
+                            lambda x: f"{x:.2f}%" if x != 0 else ""
+                        )
+
+                # Display the table
+                st.dataframe(display_data, use_container_width=True)
+
+                # Summary statistics
+                st.subheader("Summary Statistics")
+
+                # Calculate total sales per year
+                totals = {}
+                for year in selected_years:
+                    if year in merged_data.columns:
+                        totals[year] = merged_data[year].sum()
+
+                # Calculate year-over-year growth
+                growth_stats = []
+                years = sorted(selected_years)
+
+                for i in range(1, len(years)):
+                    curr_year = years[i]
+                    prev_year = years[i-1]
+
+                    if curr_year in totals and prev_year in totals:
+                        prev_total = totals[prev_year]
+                        curr_total = totals[curr_year]
+
+                        if prev_total > 0:
+                            growth_pct = ((curr_total / prev_total) - 1) * 100
+                            growth_stats.append({
+                                'From': prev_year,
+                                'To': curr_year,
+                                'Growth (%)': growth_pct
+                            })
+
+                # Display in columns
+                cols = st.columns(len(selected_years))
+
+                for i, year in enumerate(sorted(selected_years)):
+                    with cols[i]:
+                        st.metric(
+                            f"{year} Total",
+                            format_indian_money(totals[year]),
+                            f"{growth_stats[i-1]['Growth (%)']:.2f}%" if i > 0 else None
+                        )
+            else:
+                st.warning(
+                    f"No data available for {selected_month} in the selected years.")
+        else:
+            st.info("Please select at least one year and a month.")
+    else:
+        st.warning(
+            "No MTD files found in the dataset directory. Please ensure files are named correctly (e.g., 'MTD - 2022.csv').")
+
+# Direct file reading function
+
+
+def read_salon_file(file_path):
+    """
+    Read salon data directly from file with different approaches to ensure compatibility
+    """
+    try:
+        # Try multiple approaches to read the file
+
+        # Approach 1: Standard read
+        df = pd.read_csv(file_path)
+        if df.shape[1] >= 10 and 'SALONS' in df.columns:
+            return df
+
+        # Approach 2: Skip first row
+        df = pd.read_csv(file_path, skiprows=1)
+        if df.shape[1] >= 10:
+            # Identify the salon column
+            salon_col = None
+            for col in df.columns:
+                if 'SALON' in col.upper():
+                    salon_col = col
+                    break
+
+            # If no salon column found, try the 3rd column (common pattern)
+            if salon_col is None and len(df.columns) >= 3:
+                salon_col = df.columns[2]
+                df = df.rename(columns={salon_col: 'SALONS'})
+
+            if salon_col is not None:
+                return df
+
+        # Approach 3: Try with no header and assign column names
+        df = pd.read_csv(file_path, header=None)
+
+        # Typical structure of MTD files
+        # Typical number of columns (S.NO, SALONS, 12 months)
+        if df.shape[1] >= 14:
+            # Extract header row (usually row 0 or 1)
+            header_row = 0 if 'SALON' in str(df.iloc[0][2]).upper() else 1
+
+            # Extract column names from the header row
+            column_names = df.iloc[header_row].values
+
+            # Clean up column names
+            column_names = [str(name).strip() for name in column_names]
+
+            # Set appropriate column names
+            df.columns = column_names
+
+            # Skip header rows
+            df = df.iloc[header_row+1:].reset_index(drop=True)
+
+            # Rename salon column if needed
+            for col in df.columns:
+                if 'SALON' in str(col).upper():
+                    df = df.rename(columns={col: 'SALONS'})
+                    break
+
+            return df
+
+        # If all approaches fail, return the original DataFrame
+        st.warning(f"Using best-effort parsing for {file_path}")
+        return df
+
+    except Exception as e:
+        st.error(f"Error reading file {file_path}: {e}")
+        return pd.DataFrame()
+
 
 # Add footer
 st.markdown("---")
